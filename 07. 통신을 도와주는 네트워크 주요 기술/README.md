@@ -279,3 +279,204 @@
 - 도메인 주소는 영문뿐만 아니라 한글로 주소를 만들 수 있다.
 - DNS에 저장하고 조회하기 위해서는 퓨니코드로 변환되어야 한다.
 - 퓨니코드는 xn-- 로 시작하는 문자열로 변환한다.
+
+## 7.3 GSLB
+
+- DNS는 같은 이름의 레코드에 여러 IP를 넣어두고, 질의가 오면 IP를 나눠서 응답하는 방식으로 로드밸런싱처럼 보이게 할 수 있다.
+- 문제는 DNS 자체는 서비스가 살아있는지 확인하지 않는다.
+    - 특정 서버가 장애여도 DNS는 그 IP를 계속 응답할 수 있다.
+    - 결과적으로 사용자는 장애 서버로 접속을 시도하게 되고, 접속 실패가 발생한다.
+- GSLB(Global Server/Service Load Balancing)는 DNS의 한계를 극복한다.
+    - 도메인 질의에 응답하는 역할은 DNS와 유사
+    - 다만 서버들에 대해 헬스 체크를 수행하고, 정상 상태인 IP만 응답 후보로 사용한다.
+- 이런 성격 때문에 GSLB를 인텔리전스 DNS라고 부르기도 한다.
+    
+    <img width="634" height="356" alt="image" src="https://github.com/user-attachments/assets/50391b9f-97d6-4a57-b738-94dc0d4d418d" />
+    
+
+### 7.3.1 GSLB 동작 방식
+
+<img width="632" height="429" alt="image" src="https://github.com/user-attachments/assets/c9be6d8d-abec-47bd-a49b-90d29fd4c9aa" />
+
+- 사용자가 web.zigispace.net 접속을 위해 DNS 질의를 보냄
+- LDNS(Local DNS)가 root부터 순서대로 따라가며 web.zigispace.net을 관리하는 NS를 찾음
+- 해당 도메인에서 GSLB를 사용하도록 위임되어 있으면, LDNS는 GSLB 서버를 NS로 안내받음
+- LDNS가 GSLB에 다시 질의함
+- GSLB는 설정된 분산 정책과 헬스 체크 결과를 기반으로 특정 서비스 IP를 선택해 응답함
+    - 예시로 서울 센터, 부산 센터 중 정상이고 정책에 맞는 곳의 IP를 선택
+- LDNS는 그 결과를 사용자에게 최종 응답함
+- 사용자는 받은 IP로 서비스에 접속함
+- 즉, GSLB는 IP 주소 정보를 단순히 갖고 있다가 응답해주는 것이 아니라 헬스 체크를 통해 정상인 IP만 응답한다는 점이다.
+
+### 7.3.2 GSLB 구성 방식
+
+- GSLB를 사용한 도메인 설정 방법은 두 가지가 있다.
+    - 도메인 자체를 GSLB로 사용
+    - 도메인 내의 특정 레코드만 GSLB를 사용
+- 도메인 자체를 GSLB로 사용하는 경우
+    - 도메인의 NS 자체를 GSLB 장비로 지정하는 방식
+    - 해당 도메인에 속한 레코드 질의가 전반적으로 GSLB를 통해 처리된다.
+    - 한 곳에서 일괄 관리가 가능하지만, 모든 질의가 GSLB로 몰리므로 GSLB 부하가 커질 수 있다.
+- 도메인 내 특정 레코드만 GSLB 적용
+    - 회사 대표 도메인 전체를 다 GSLB로 돌릴 필요가 없을 때 자주 쓰는 방식이다.
+    - CNAME(별칭, Alias) 방식
+        - web.zigispace.net 같은 실제 서비스 이름은 CNAME으로 GSLB가 관리하는 다른 FQDN을 가리키게 함
+        - LDNS는 먼저 원래 이름을 조회한 다음 CNAME을 따라가며 GSLB 쪽으로 다시 조회를 진행
+        - CDN이나 외부 GSLB 사업자를 붙일 때도 이런 형태가 잘 맞다.
+            
+            <img width="726" height="420" alt="image" src="https://github.com/user-attachments/assets/2a62ba8e-f060-4ae6-84ec-6ab62aa033c7" />
+            
+    - NS 위임(Delegation) 방식
+        - 특정 FQDN에 대해 NS 레코드를 GSLB로 지정해서 그 영역을 위임한다.
+        - LDNS는 해당 FQDN 질의에서 GSLB를 권한 서버처럼 찾아가게 된다.
+        - 한 FQDN을 위임하면 그 하위 도메인들도 계층적으로 함께 위임 처리되는 효과가 있다.
+        - 그래서 web 아래에 shopping.web, portal.web 같은 하위가 많을 때 DNS 설정을 최소화할 수 있다.
+            
+            <img width="712" height="413" alt="image" src="https://github.com/user-attachments/assets/8c081d36-fb9f-4c19-8b1e-ed6e7f66b138" />
+            
+
+### 7.3.3 GSLB 분산 방식
+
+- GSLB를 이용해 서비스를 분산하면 다음과 같은 목적을 달성할 수 있다.
+    - 서비스 제공 가능 여부를 확인한 뒤 트래픽을 분산
+    - 지리적으로 떨어진 다른 데이터 센터로 트래픽을 분산
+    - 사용자와 더 가까운 쪽, 더 빠른 쪽으로 유도해 체감 성능을 개선
+- 헬스 체크와 분산에서 자주 쓰는 판단 요소
+    - RTT, Latency 같은 응답 시간 정보
+    - IP에 대한 지리(Geography) 정보
+- RTT나 Geo 판단은 사용자의 실제 위치 기준이 아니라, 보통 사용자가 바라보는 LDNS(Local DNS)와 GSLB 사이의 관측값을 기반으로 결정됨
+- 그래서 국내 사용자라도 해외 DNS를 LDNS로 쓰면, 오히려 더 먼 센터로 유도되어 접속 시간이 늘어날 수 있다.
+
+## 7.4 DHCP
+
+- 호스트가 네트워크 통신을 하려면 다음 정보가 필요하다.
+    - IP 주소
+    - 서브넷 마스크
+    - 기본 게이트웨이
+    - DNS 서버 주소
+- DHCP(Dynamic Host Configuration Protocol)의 목적은 사용자가 직접 입력해야 하는 네트워크 설정을 자동으로 할당해준다.
+- DHCP 장점
+    - 별도 IP 설정 작업이 줄어 사용자와 관리자 모두 편해진다.
+    - 미사용 IP를 회수해 필요한 경우 재할당 가능하다.
+    - 수동 입력으로 생길 수 있는 오류, 중복 IP 할당 문제를 예방한다.
+
+### 7.4.1 DHCP 프로토콜
+
+- DHCP는 BOOTP 기반 프로토콜이다.
+    - BOOTP와 유사하게 동작
+    - BOOTP에 없는 기능을 추가한 확장 형태
+- DHCP와 BOOTP는 호환성이 있다.
+    - BOOTP 클라이언트가 DHCP 서버를 쓰거나
+    - DHCP 클라이언트가 BOOTP 서버로부터 정보를 받을 수도 있다.
+- DHCP는 서버와 클라이언트 구조로 동작한다.
+- DHCP 포트
+    - 클라이언트 서비스 포트: 68(bootpc)
+    - 서버 서비스 포트: 67(bootps)
+
+### 7.4.2 DHCP 동작 방식
+
+- DHCP로 신규 IP를 자동 할당받는 과정은 4단계로 진행된다.
+    
+    <img width="842" height="570" alt="image" src="https://github.com/user-attachments/assets/c57280d0-15c5-4770-a196-9158447c0487" />
+    
+- 1. DHCP Discover
+    - DHCP 클라이언트가 DHCP 서버를 찾기 위해 브로드캐스트 전송
+    - 클라이언트는 아직 IP가 없으므로 다음처럼 전송
+        - 출발지 IP: 0.0.0.0
+        - 목적지 IP: 255.255.255.255
+    - 사용 포트
+        - 출발지 UDP 68
+        - 목적지 UDP 67
+    - 할당 과정이므로 TCP가 아니라 UDP 사용
+- 2. DHCP Offer
+    - DHCP 서버가 Discover를 수신하면 할당할 IP를 선택
+    - IP 선택 기준
+        - DHCP IP Pool에서 임의로 선택 가능
+        - 또는 특정 MAC 주소에 대해 특정 IP를 사전 정의해 고정 IP처럼 할당 가능
+    - Offer에 포함되는 정보
+        - 할당 IP
+        - 서브넷 마스크
+        - 게이트웨이
+        - DNS 정보
+        - 임대 시간(Lease Time)
+        - DHCP Server Identifier(서버 식별자)
+- 3. DHCP Request
+    - 클라이언트가 서버로부터 제안받은 설정값을 요청
+    - 포함되는 핵심 정보
+        - Requested IP
+        - DHCP Server Identifier
+- 4. DHCP Acknowledgement(ACK)
+    - DHCP 서버가 요청을 승인한다는 응답
+    - 서버는 다음을 기록하고 전송
+        - 해당 IP를 어떤 클라이언트가 언제부터 사용할지
+        - Request를 정상 수신했다는 확인
+    - 클라이언트는 ACK 수신 후 IP를 로컬에 설정하고 사용 시작
+
+### 임대(Lease)와 갱신(Renewal)
+
+- DHCP는 IP를 소유권이 아니라 임대 형태로 제공한다.
+- DHCP 서버는 할당한 IP와 임대 시간을 함께 전달한다.
+- 임대 시간이 만료되면 서버는 해당 IP를 IP Pool로 회수한다.
+- 임대 만료 이후 동작
+    - 이론적으로는 다시 Discover부터 새로 할당을 시작해야 한다.
+    - 실제로는 갱신(Renewal) 절차로 기존 IP를 유지하는 경우가 많다.
+- 갱신 시점과 흐름
+    - 임대 시간의 50퍼센트가 지나면 갱신 절차를 수행한다.
+    - 초기 할당과 달리 다음 단계가 생략된다.
+        - Discover
+        - Offer
+    - 갱신 절차는 Request와 ACK 중심으로 진행된다.
+    - 초기 할당은 브로드캐스트 중심이지만, 갱신은 브로드캐스트가 아니라 유니캐스트로 진행되어 불필요한 브로드캐스트를 줄인다.
+- 임대 시간 설정 관점 팁
+    - 클라이언트가 어느 정도 고정적이고 IP 범위가 넓으면 임대 시간을 길게 설정한다.
+    - 클라이언트가 불특정이고 자주 바뀌면 임대 시간을 짧게 해서 IP가 빨리 회수되도록 설정한다.
+
+### 참고: DHCP Starvation 공격
+
+- DHCP 서버는 가용 IP 리스트(IP 풀)를 관리한다.
+    - 전체 IP 범위
+    - 이미 임대된 IP와 임대 시간
+    - 아직 임대되지 않은 가용 IP
+- 공격 개념
+    - 가용 IP가 모두 소진된 상태에서 새로운 클라이언트가 Discover를 보내면 IP를 할당할 수 없다.
+    - 이 점을 악용해 DHCP 서버의 가용 IP를 가짜로 대량 할당받아 정상 클라이언트가 IP를 못 받게 만드는 공격이 DHCP Starvation(기아 상태) 공격이다.
+
+### 7.4.3 DHCP 서버 구성
+
+- DHCP 서버 구성 시 주로 설정하는 값
+    - IP 주소 풀(IP 범위)
+        - 클라이언트에 할당할 IP 주소 범위
+    - 예외 IP 주소 풀(예외 IP 범위)
+        - 선언된 범위 중 예외적으로 할당하지 않을 대역
+    - 임대 시간
+        - 클라이언트에 할당할 IP의 기본 임대 시간
+    - 서브넷 마스크
+        - 클라이언트에 할당할 IP에 대한 서브넷 마스크 정보
+    - 게이트웨이(라우터)
+        - 클라이언트에 할당할 기본 게이트웨이 정보
+    - DNS
+        - 클라이언트에 할당할 DNS 주소
+- DHCP 서버 구현 위치
+    - 윈도우 서버의 DHCP 서비스
+    - 리눅스의 DHCP 데몬
+    - 스위치, 라우터, 방화벽, VPN 같은 네트워크 장비
+
+### 7.4.4 DHCP 릴레이
+
+- DHCP 패킷은 기본적으로 브로드캐스트로 전송된다.
+- 브로드캐스트는 동일 네트워크에서만 전달되므로 다음과 같은 문제가 있다.
+    - 네트워크가 여러 개로 분리된 환경에서는 DHCP 메시지가 다른 네트워크의 DHCP 서버까지 도달하지 못한다.
+    - 따라서 네트워크마다 DHCP 서버를 따로 둬야 하는 상황이 발생한다.
+        
+        <img width="828" height="432" alt="image" src="https://github.com/user-attachments/assets/14be497a-0ceb-4f4d-bfab-9b38079eafdf" />
+        
+- DHCP 릴레이 에이전트(Relay Agent) 기능
+    - DHCP 클라이언트와 DHCP 서버가 서로 다른 네트워크 대역에 있을 때 DHCP 패킷을 중간에서 릴레이해 DHCP 서버까지 전달한다.
+    - 브로드캐스트로 들어온 DHCP 패킷을 서버로 갈 수 있도록 유니캐스트로 변환해 전달하는 역할
+- 릴레이를 쓰면 네트워크마다 DHCP 서버를 두지 않고 중앙 DHCP 서버만으로 여러 네트워크의 IP 풀을 관리할 수 있다.
+    
+    <img width="828" height="492" alt="image" src="https://github.com/user-attachments/assets/2df198ad-3d01-4851-83d5-6a77aada986f" />
+    
+- 릴레이 동작 조건
+    - 릴레이 에이전트는 DHCP 클라이언트와 같은 L2 네트워크 내에 존재해야 한다.
+    - 릴레이 에이전트는 DHCP 서버로 유니캐스트 전달을 위해 DHCP 서버 IP를 알고 있어야 한다.
